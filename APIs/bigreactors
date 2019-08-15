@@ -1,0 +1,1455 @@
+--setup variables for reactors/turbines on an aside why are arrays called tables? Confused me until I saw the setup and was like derp.
+
+--this file is getting huge im going to make it a module to let me reference the functions within in a bedrock file.
+-- bigreactors = {}
+
+local debugMode = false
+controlRodAdjustAmount = 1 --control rod adjustment ammount
+reactorList = {} -- Empty reactor array
+reactorNames = {} -- Empty array of reactor names
+turbineList = {} -- Empty turbine array
+turbineNames = {} -- Empty array of turbine names
+enderioList = {} -- Empty array of EnderIO Capaciter Banks
+enderioNames = {} -- Empty array of EnderIO Capaciter Bank Names
+flowRateAdjustAmount = 25 -- Default Turbine Flow Rate in mB adjustment amount
+local minStoredEnergyPercent = nil -- Max energy % to store before activate
+local maxStoredEnergyPercent = nil -- Max energy % to store before shutdown
+local minimumTemp = nil --Minimum temprature set in settings
+local maximumTemp = nil --Maximum temprature set in settings
+local suggestedMaxTemp = nil --suggested Maximum temprature to reach minimum tick rate
+local suggestedMinTemp = nil --suggested Minimum temprature to reach maximum tick rate
+local RFProduced = 0 --all rf produced by any energy producing device
+local AverageRotorSpeed = 0
+local monitorEnderIONetwork = nil --weather or not to search for connections to ender IO devices to use instead of stored energy.
+local minimumRFTickRate = nil --how much constant rf per tick should be produced for high power devices mfr drills / mffs
+monitorList = {} -- Empty monitor array all devices to initalize and sync
+monitorNames = {} -- Empty array of monitor names names for sync of certain views
+local turbineCount = 0 -- last count of all turbines found
+local reactorCount = 0 -- last count of all reactors found
+local totalEnergyBuffers = 0
+local turbineBaseSpeed = nil
+
+--getter setter methods
+function getTurbineCount()
+return turbineCount
+end
+
+function getReactorCount()
+return reactorCount
+end
+
+function getsuggestedMaxTemp()
+return suggestedMaxTemp
+end
+
+function getsuggestedMinTemp()
+return suggestedMinTemp
+end
+
+function getmonitorEnderIONetwork()
+return monitorEnderIONetwork
+end
+
+function getminimumRFTickRate()
+return minimumRFTickRate
+end
+
+function getdebugMode()
+return debugMode
+end
+
+function getminimumTemp()
+return minimumTemp
+end
+
+function getmaximumTemp()
+return maximumTemp
+end
+
+function getminStoredEnergyPercent()
+return minStoredEnergyPercent
+end
+
+function getmaxStoredEnergyPercent()
+return maxStoredEnergyPercent
+end
+
+function getturbineBaseSpeed()
+return turbineBaseSpeed
+end
+
+function setturbineBaseSpeed(num)
+turbineBaseSpeed = num 
+end
+
+function setsuggestedMinimumTemp(num)
+suggestedMinTemp = num
+end
+
+function setsuggestedMaximumTemp(num)
+suggestedMaxTemp = num
+end
+
+function setmonitorEnderIONetwork(bool)
+monitorEnderIONetwork = bool
+end
+
+function setminimumRFTickRate(num)
+minimumRFTickRate = num
+end
+
+function setdebugMode(bool)
+debugMode = bool
+end
+
+function setminimumTemp(num)
+minimumTemp = num
+end
+
+function setmaximumTemp(num)
+maximumTemp = num
+end
+
+function setminStoredEnergyPercent(num)
+minStoredEnergyPercent = num
+end
+
+function setmaxStoredEnergyPercent(num)
+maxStoredEnergyPercent = num
+end
+
+--end getter setter methods
+ function printLog(printStr)
+	if debugMode then
+		local logFile = fs.open("reactorcontrol.log",fs.exists("reactorcontrol.log") and "a" or "w") -- See http://computercraft.info/wiki/Fs.open
+		if logFile then
+			logFile.writeLine(printStr)
+			logFile.close()
+		else
+			error("Cannot open file reactorcontrol.log for appending!")
+		end -- if logFile then
+	end -- if debugMode then
+end -- function printLog(printStr)
+
+-- Trim a string
+function stringTrim(s)
+	assert(s ~= nil, "String can't be nil")
+	return(string.gsub(s, "^%s*(.-)%s*$", "%1"))
+end
+
+config = {}
+ 
+-- Save a table into a config file
+-- path: path of the file to write
+-- tab: table to save
+config.save = function(path, tab)
+        printLog("Save function called for config for "..path.." EOL")
+        assert(path ~= nil, "Path can't be nil")
+        assert(type(tab) == "table", "Second parameter must be a table")
+        local f = assert(io.open(path, "w"))
+        local i = 0
+        for key, value in pairs(tab) do
+                if i ~= 0 then
+                        f:write("\n")
+                end
+                f:write("["..key.."]".."\n")
+                for key2, value2 in pairs(tab[key]) do
+                        key2 = stringTrim(key2)
+                        --doesn't like boolean values
+                        if (type(value2) ~= "boolean") then
+                        value2 = stringTrim(value2)
+                        else
+                        value2 = tostring(value2)
+                        end
+                        key2 = key2:gsub(";", "\\;")
+                        key2 = key2:gsub("=", "\\=")
+                        value2 = value2:gsub(";", "\\;")
+                        value2 = value2:gsub("=", "\\=")       
+                        f:write(key2.."="..value2.."\n")
+                end
+                i = i + 1
+        end
+        f:close()
+end --config.save = function(path, tab)
+ 
+-- Load a config file
+-- path: path of the file to read
+config.load = function(path)
+        printLog("Load function called for config for "..path.." EOL")
+        assert(path ~= nil, "Path can't be nil")
+        local f = fs.open(path, "r")
+        if f ~= nil then
+                local tab = {}
+                local line = ""
+                local newLine
+                local i
+                local currentTag = nil
+                local found = false
+                local pos = 0
+                while line ~= nil do
+                        found = false          
+                        line = line:gsub("\\;", "#_!36!_#") -- to keep \;
+                        line = line:gsub("\\=", "#_!71!_#") -- to keep \=
+                        if line ~= "" then
+                                -- Delete comments
+                                newLine = line
+                                line = ""
+                                for i=1, string.len(newLine) do                        
+                                        if string.sub(newLine, i, i) ~= ";" then
+                                                line = line..newLine:sub(i, i)                                         
+                                        else                           
+                                                break
+                                        end
+                                end
+                                line = stringTrim(line)
+                                -- Find tag                    
+                                if line:sub(1, 1) == "[" and line:sub(line:len(), line:len()) == "]" then
+                                        currentTag = stringTrim(line:sub(2, line:len()-1))
+                                        tab[currentTag] = {}
+                                        found = true                                                   
+                                end
+                                -- Find key and values
+                                if not found and line ~= "" then                               
+                                        pos = line:find("=")                           
+                                        if pos == nil then
+                                                error("Bad INI file structure")
+                                        end
+                                        line = line:gsub("#_!36!_#", ";")
+                                        line = line:gsub("#_!71!_#", "=")
+                                        tab[currentTag][stringTrim(line:sub(1, pos-1))] = stringTrim(line:sub(pos+1, line:len()))
+                                        found = true                   
+                                end                    
+                        end
+                        line = f.readLine()
+                end
+                f:close()
+                return tab
+        else
+                return nil
+        end
+end --config.load = function(path)
+
+
+-- round() function from mechaet
+ function round(num, places)
+	 mult = 10^places
+	 addon = nil
+	if ((num * mult) < 0) then
+		addon = -.5
+	else
+		addon = .5
+	end
+
+	 integer, decimal = math.modf(num*mult+addon)
+	newNum = integer/mult
+	printLog("Called round(num="..num..",places="..places..") returns \""..newNum.."\".")
+	return newNum
+end -- function round(num, places)
+
+-- Return a list of all connected (including via wired modems) devices of "deviceType"
+ function getDevices(deviceType)
+	printLog("Called as getDevices(deviceType="..deviceType..")")
+
+	 deviceName = nil
+	 deviceIndex = 1
+	 deviceList, deviceNames = {}, {} -- Empty array, which grows as we need
+	 peripheralList = peripheral.getNames() -- Get table of connected peripherals
+
+	deviceType = deviceType:lower() -- Make sure we're matching case here
+
+	for peripheralIndex = 1, #peripheralList do
+		-- Log every device found
+		-- printLog("Found "..peripheral.getType(peripheralList[peripheralIndex]).."["..peripheralIndex.."] attached as \""..peripheralList[peripheralIndex].."\".")
+		if (string.lower(peripheral.getType(peripheralList[peripheralIndex])) == deviceType) then
+			-- Log devices found which match deviceType and which device index we give them
+			printLog("Found "..peripheral.getType(peripheralList[peripheralIndex]).."["..peripheralIndex.."] as index \"["..deviceIndex.."]\" attached as \""..peripheralList[peripheralIndex].."\".")
+			deviceNames[deviceIndex] = peripheralList[peripheralIndex]
+			deviceList[deviceIndex] = peripheral.wrap(peripheralList[peripheralIndex])
+			deviceIndex = deviceIndex + 1
+		end
+	end -- for peripheralIndex = 1, #peripheralList do
+
+	return deviceList, deviceNames
+end -- function getDevices(deviceType)
+
+
+
+-- Then initialize the monitors
+function findMonitors()
+	-- Empty out old list of monitors
+	monitorList = {}
+
+	printLog("Finding monitors...")
+	monitorList, monitorNames = getDevices("monitor")
+
+	if #monitorList == 0 then
+		printLog("No monitors found!")
+		error("Can't find any monitors!")
+	else
+		for monitorIndex = 1, #monitorList do
+			local monitor, monitorX, monitorY = nil, nil, nil
+			monitor = monitorList[monitorIndex]
+
+			if not monitor then
+				printLog("monitorList["..monitorIndex.."] in findMonitors() is NOT a valid monitor.")
+
+				table.remove(monitorList, monitorIndex) -- Remove invalid monitor from list
+				if monitorIndex ~= #monitorList then    -- If we're not at the end, clean up
+					monitorIndex = monitorIndex - 1 -- We just removed an element
+				end -- if monitorIndex == #monitorList then
+				break -- Invalid monitorIndex
+			else -- valid monitor
+				monitorX, monitorY = monitor.getSize()
+				if (monitorX == nil) or (monitorY == nil) then -- somehow a valid monitor, but non-existent sizes? Maybe fixes Issue #3
+					printLog("monitorList["..monitorIndex.."] in findMonitors() is NOT a valid sized monitor.")
+
+					table.remove(monitorList, monitorIndex) -- Remove invalid monitor from list
+					if monitorIndex ~= #monitorList then    -- If we're not at the end, clean up
+						monitorIndex = monitorIndex - 1 -- We just removed an element
+					end -- if monitorIndex == #monitorList then
+					break -- Invalid monitorIndex
+				end -- if monitorX < 29 or monitorY < 12 then
+				sync.addTarget(monitor)
+				sync.redirect(true)
+			end -- if not monitor then
+			printLog("Monitor["..monitorIndex.."] named \""..monitorNames[monitorIndex].."\" is a valid monitor of size x:"..monitorX.." by y:"..monitorY..".")
+		end -- for monitorIndex = 1, #monitorList do
+	end -- if #monitorList == 0 then
+
+	printLog("Found "..#monitorList.." monitor(s) in findMonitors().")
+end -- local function findMonitors()
+
+
+-- Initialize all Big Reactors - Reactors
+function findReactors()
+	-- Empty out old list of reactors
+	local newReactorList = {}
+	local count = 0
+	printLog("Finding reactors...")
+	newReactorList, reactorNames = getDevices("BigReactors-Reactor")
+
+	if #newReactorList == 0 then
+		printLog("No reactors found!")
+		error("Can't find any reactors!")
+	else  -- Placeholder
+		for reactorIndex = 1, #newReactorList do
+			 local reactor = nil
+			reactor = newReactorList[reactorIndex]
+
+			if not reactor then
+				printLog("reactorList["..reactorIndex.."] in findReactors() is NOT a valid Big Reactor.")
+
+				table.remove(newReactorList, reactorIndex) -- Remove invalid reactor from list
+				if reactorIndex ~= #newReactorList then    -- If we're not at the end, clean up
+					reactorIndex = reactorIndex - 1 -- We just removed an element
+				end -- reactorIndex ~= #newReactorList then
+				return -- Invalid reactorIndex
+			else
+				printLog("reactor["..reactorIndex.."] in findReactors() is a valid Big Reactor.")
+				--initialize the default table
+				count = count + 1
+				_G[reactorNames[reactorIndex]] = {}
+				_G[reactorNames[reactorIndex]]["ReactorOptions"] = {}
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["baseControlRodLevel"] = 80
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["lastTempPoll"] = 0
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["autoStart"] = true
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["activeCooled"] = true
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMaxTemp"] = maximumTemp
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMinTemp"] = minimumTemp
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"] = false
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorName"] = reactorNames[reactorIndex]
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorCruising"] = false
+				if reactor.getConnected() then
+					printLog("reactor["..reactorIndex.."] in findReactors() is connected.")
+				else
+					printLog("reactor["..reactorIndex.."] in findReactors() is NOT connected.")
+					return -- Disconnected reactor
+				end
+			end
+			
+			--failsafe
+			 local tempTable = _G[reactorNames[reactorIndex]]
+			
+			--check to make sure we get a valid config
+			if (config.load(reactorNames[reactorIndex]..".options")) ~= nil then
+				tempTable = config.load(reactorNames[reactorIndex]..".options")
+			else
+				--if we don't have a valid config from disk, make a valid config
+				config.save(reactorNames[reactorIndex]..".options", _G[reactorNames[reactorIndex]])
+			end
+			
+			--load values from tempTable, checking for nil values along the way
+			if tempTable["ReactorOptions"]["baseControlRodLevel"] ~= nil then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["baseControlRodLevel"] = tempTable["ReactorOptions"]["baseControlRodLevel"]
+			end
+			
+			if tempTable["ReactorOptions"]["lastTempPoll"] ~= nil then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["lastTempPoll"] = tempTable["ReactorOptions"]["lastTempPoll"]
+			end
+			
+			if tempTable["ReactorOptions"]["autoStart"] ~= nil then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["autoStart"] = tempTable["ReactorOptions"]["autoStart"]
+			end
+			
+			if tempTable["ReactorOptions"]["activeCooled"] ~= nil then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["activeCooled"] = tempTable["ReactorOptions"]["activeCooled"]
+			end
+			
+			if tempTable["ReactorOptions"]["reactorMaxTemp"] ~= nil then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMaxTemp"] = tempTable["ReactorOptions"]["reactorMaxTemp"]
+			end
+			
+			if tempTable["ReactorOptions"]["reactorMinTemp"] ~= nil then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMinTemp"] = tempTable["ReactorOptions"]["reactorMinTemp"]
+			end
+			
+			if tempTable["ReactorOptions"]["rodOverride"] ~= nil then
+				printLog("Got value from config file for Rod Override, the value is: "..tostring(tempTable["ReactorOptions"]["rodOverride"]).." EOL")
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"] = tempTable["ReactorOptions"]["rodOverride"]
+			end
+			
+			if tempTable["ReactorOptions"]["reactorName"] ~= nil then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorName"] = tempTable["ReactorOptions"]["reactorName"]
+			end
+			
+			if tempTable["ReactorOptions"]["reactorCruising"] ~= nil then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorCruising"] = tempTable["ReactorOptions"]["reactorCruising"]
+			end
+			
+			--stricter typing, let's set these puppies up with the right type of value.
+			_G[reactorNames[reactorIndex]]["ReactorOptions"]["baseControlRodLevel"] = tonumber(_G[reactorNames[reactorIndex]]["ReactorOptions"]["baseControlRodLevel"])
+			
+			_G[reactorNames[reactorIndex]]["ReactorOptions"]["lastTempPoll"] = tonumber(_G[reactorNames[reactorIndex]]["ReactorOptions"]["lastTempPoll"])
+			
+			if (tostring(_G[reactorNames[reactorIndex]]["ReactorOptions"]["autoStart"]) == "true") then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["autoStart"] = true
+			else
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["autoStart"] = false
+			end
+			
+			if (tostring(_G[reactorNames[reactorIndex]]["ReactorOptions"]["activeCooled"]) == "true") then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["activeCooled"] = true
+			else
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["activeCooled"] = false
+			end
+			
+			_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMaxTemp"] = tonumber(_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMaxTemp"])
+			
+			_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMinTemp"] = tonumber(_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMinTemp"])
+			
+			if (tostring(_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"]) == "true") then
+				printLog("Setting Rod Override for  "..reactorNames[reactorIndex].." to true because value was "..tostring(_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"]).." EOL")
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"] = true
+			else
+				printLog("Setting Rod Override for  "..reactorNames[reactorIndex].." to false because value was "..tostring(_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"]).." EOL")
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"] = false
+			end
+			
+			if (tostring(_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorCruising"]) == "true") then
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorCruising"] = true
+			else
+				_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorCruising"] = false
+			end
+						
+			--save one more time, in case we didn't have a complete config file before
+			config.save(reactorNames[reactorIndex]..".options", _G[reactorNames[reactorIndex]])
+		end -- for reactorIndex = 1, #newReactorList do
+	end -- if #newReactorList == 0 then
+
+	-- Overwrite old reactor list with the now updated list
+	reactorList = newReactorList
+	reactorCount = count
+	printLog("Found "..#reactorList.." reactor(s) in findReactors().")
+end -- function findReactors()
+
+-- Initialize all Big Reactors - Turbines
+function findTurbines()
+	-- Empty out old list of turbines
+	local newTurbineList = {}
+	local count = 0
+	printLog("Finding turbines...")
+	newTurbineList, turbineNames = getDevices("BigReactors-Turbine")
+
+	if #newTurbineList == 0 then
+		printLog("No turbines found") -- Not an error
+	else
+		for turbineIndex = 1, #newTurbineList do
+			local turbine = nil
+			turbine = newTurbineList[turbineIndex]
+
+			if not turbine then
+				printLog("turbineList["..turbineIndex.."] in findTurbines() is NOT a valid Big Reactors Turbine.")
+
+				table.remove(newTurbineList, turbineIndex) -- Remove invalid turbine from list
+				if turbineIndex ~= #newTurbineList then    -- If we're not at the end, clean up
+					turbineIndex = turbineIndex - 1 -- We just removed an element
+				end -- turbineIndex ~= #newTurbineList then
+
+				return -- Invalid turbineIndex
+			else
+				count = count + 1
+				_G[turbineNames[turbineIndex]] = {}
+				_G[turbineNames[turbineIndex]]["TurbineOptions"] = {}
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastSpeed"] = 0
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["BaseSpeed"] = turbineBaseSpeed
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["autoStart"] = true
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastFlow"] = 2000 --open up with all the steam wide open
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["flowOverride"] = false
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["turbineName"] = turbineNames[turbineIndex]
+				printLog("turbineList["..turbineIndex.."] in findTurbines() is a valid Big Reactors Turbine.")
+				if turbine.getConnected() then
+					printLog("turbine["..turbineIndex.."] in findTurbines() is connected.")
+				else
+					printLog("turbine["..turbineIndex.."] in findTurbines() is NOT connected.")
+					return --Not connected
+				end
+			end
+			
+			--failsafe
+			local tempTable = _G[turbineNames[turbineIndex]]
+			
+			--check to make sure we get a valid config
+			if (config.load(turbineNames[turbineIndex]..".options")) ~= nil then
+				tempTable = config.load(turbineNames[turbineIndex]..".options")
+			else
+				--if we don't have a valid config from disk, make a valid config
+				config.save(turbineNames[turbineIndex]..".options", _G[turbineNames[turbineIndex]])
+			end
+			
+			--load values from tempTable, checking for nil values along the way
+			if tempTable["TurbineOptions"]["LastSpeed"] ~= nil then
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastSpeed"] = tempTable["TurbineOptions"]["LastSpeed"]
+			end
+			
+			if tempTable["TurbineOptions"]["BaseSpeed"] ~= nil then
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["BaseSpeed"] = tempTable["TurbineOptions"]["BaseSpeed"]
+			end
+			
+			if tempTable["TurbineOptions"]["autoStart"] ~= nil then
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["autoStart"] = tempTable["TurbineOptions"]["autoStart"]
+			end
+			
+			if tempTable["TurbineOptions"]["LastFlow"] ~= nil then
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastFlow"] = tempTable["TurbineOptions"]["LastFlow"]
+			end
+			
+			if tempTable["TurbineOptions"]["flowOverride"] ~= nil then
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["flowOverride"] = tempTable["TurbineOptions"]["flowOverride"]
+			end
+			
+			if tempTable["TurbineOptions"]["turbineName"] ~= nil then
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["turbineName"] = tempTable["TurbineOptions"]["turbineName"]
+			end
+			
+			--stricter typing, let's set these puppies up with the right type of value.
+			_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastSpeed"] = tonumber(_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastSpeed"])
+			
+			_G[turbineNames[turbineIndex]]["TurbineOptions"]["BaseSpeed"] = tonumber(_G[turbineNames[turbineIndex]]["TurbineOptions"]["BaseSpeed"])
+
+			_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastFlow"] = tonumber(_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastFlow"])
+			
+			if (tostring(_G[turbineNames[turbineIndex]]["TurbineOptions"]["autoStart"]) == "true") then
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["autoStart"] = true
+			else
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["autoStart"] = false
+			end
+			
+			if (tostring(_G[turbineNames[turbineIndex]]["TurbineOptions"]["flowOverride"]) == "true") then
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["flowOverride"] = true
+			else
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["flowOverride"] = false
+			end
+			--save once more just to make sure we got it
+			config.save(turbineNames[turbineIndex]..".options", _G[turbineNames[turbineIndex]])
+		end -- for turbineIndex = 1, #newTurbineList do
+
+		-- Overwrite old turbine list with the now updated list
+		turbineList = newTurbineList
+	end -- if #newTurbineList == 0 then
+	turbineCount = count
+	printLog("Found "..#turbineList.." turbine(s) in findTurbines().")
+end -- function findTurbines()
+
+
+-- Return current energy buffer in a specific reactor by %
+ function getReactorStoredEnergyBufferPercent(reactor)
+	printLog("Called as getReactorStoredEnergyBufferPercent(reactor).")
+
+	if not reactor then
+		printLog("getReactorStoredEnergyBufferPercent() did NOT receive a valid Big Reactor Reactor.")
+		return -- Invalid reactorIndex
+	else
+		printLog("getReactorStoredEnergyBufferPercent() did receive a valid Big Reactor Reactor.")
+	end
+
+	 local energyBufferStorage = reactor.getEnergyStored()
+	return round(energyBufferStorage/100000, 1) -- (buffer/10000000 RF)*100%
+end -- function getReactorStoredEnergyBufferPercent(reactor)
+
+
+-- Return current energy buffer in a specific Turbine by %
+ function getTurbineStoredEnergyBufferPercent(turbine)
+	printLog("Called as getTurbineStoredEnergyBufferPercent(turbine)")
+
+	if not turbine then
+		printLog("getTurbineStoredEnergyBufferPercent() did NOT receive a valid Big Reactor Turbine.")
+		return -- Invalid reactorIndex
+	else
+		printLog("getTurbineStoredEnergyBufferPercent() did receive a valid Big Reactor Turbine.")
+	end
+
+	 local energyBufferStorage = turbine.getEnergyStored()
+	return round(energyBufferStorage/10000, 1) -- (buffer/1000000 RF)*100%
+end -- function getTurbineStoredEnergyBufferPercent(turbine)
+
+function reactorCruise(cruiseMaxTemp, cruiseMinTemp, reactorIndex)
+	printLog("Called as reactorCruise(cruiseMaxTemp="..cruiseMaxTemp..",cruiseMinTemp="..cruiseMinTemp..",lastPolledTemp=".._G[reactorNames[reactorIndex]]["ReactorOptions"]["lastTempPoll"]..",reactorIndex="..reactorIndex..").")
+	
+	--sanitization
+	local lastPolledTemp = tonumber(_G[reactorNames[reactorIndex]]["ReactorOptions"]["lastTempPoll"])
+	local cruiseMaxTemp = tonumber(cruiseMaxTemp)
+	local cruiseMinTemp = tonumber(cruiseMinTemp)
+	
+	if ((lastPolledTemp < cruiseMaxTemp) and (lastPolledTemp > cruiseMinTemp)) then
+		 reactor = nil
+		reactor = reactorList[reactorIndex]
+		if not reactor then
+			printLog("reactor["..reactorIndex.."] in reactorCruise(cruiseMaxTemp="..cruiseMaxTemp..",cruiseMinTemp="..cruiseMinTemp..",lastPolledTemp="..lastPolledTemp..",reactorIndex="..reactorIndex..") is NOT a valid Big Reactor.")
+			return -- Invalid reactorIndex
+		else
+			printLog("reactor["..reactorIndex.."] in reactorCruise(cruiseMaxTemp="..cruiseMaxTemp..",cruiseMinTemp="..cruiseMinTemp..",lastPolledTemp="..lastPolledTemp..",reactorIndex="..reactorIndex..") is a valid Big Reactor.")
+			if reactor.getConnected() then
+				printLog("reactor["..reactorIndex.."] in reactorCruise(cruiseMaxTemp="..cruiseMaxTemp..",cruiseMinTemp="..cruiseMinTemp..",lastPolledTemp="..lastPolledTemp..",reactorIndex="..reactorIndex..") is connected.")
+			else
+				printLog("reactor["..reactorIndex.."] in reactorCruise(cruiseMaxTemp="..cruiseMaxTemp..",cruiseMinTemp="..cruiseMinTemp..",lastPolledTemp="..lastPolledTemp..",reactorIndex="..reactorIndex..") is NOT connected.")
+				return -- Disconnected reactor
+			end -- if reactor.getConnected() then
+		end -- if not reactor then
+
+		 rodPercentage = math.ceil(reactor.getControlRodLevel(0))
+		 reactorTemp = math.ceil(reactor.getFuelTemperature())
+		_G[reactorNames[reactorIndex]]["ReactorOptions"]["baseControlRodLevel"] = rodPercentage
+		
+		if ((reactorTemp < cruiseMaxTemp) and (reactorTemp > cruiseMinTemp)) then
+			if (reactorTemp < lastPolledTemp) then
+				rodPercentage = (rodPercentage - 1)
+				--Boundary check
+				if rodPercentage < 0 then
+					reactor.setAllControlRodLevels(0)
+				else
+					reactor.setAllControlRodLevels(rodPercentage)
+				end
+			else
+				rodPercentage = (rodPercentage + 1)
+				--Boundary check
+				if rodPercentage > 99 then
+					reactor.setAllControlRodLevels(99)
+				else
+					reactor.setAllControlRodLevels(rodPercentage)
+				end
+			end -- if (reactorTemp > lastPolledTemp) then
+		else
+			--disengage cruise, we've fallen out of the ideal temperature range
+			_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorCruising"] = false
+		end -- if ((reactorTemp < cruiseMaxTemp) and (reactorTemp > cruiseMinTemp)) then
+	else
+		--I don't know how we'd get here, but let's turn the cruise mode off
+		_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorCruising"] = false
+	end -- if ((lastPolledTemp < cruiseMaxTemp) and (lastPolledTemp > cruiseMinTemp)) then
+	_G[reactorNames[reactorIndex]]["ReactorOptions"]["lastTempPoll"] = reactorTemp
+	_G[reactorNames[reactorIndex]]["ReactorOptions"]["activeCooled"] = true
+	_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMaxTemp"] = cruiseMaxTemp
+	_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMinTemp"] = cruiseMinTemp
+	config.save(reactorNames[reactorIndex]..".options", _G[reactorNames[reactorIndex]])
+end -- function reactorCruise(cruiseMaxTemp, cruiseMinTemp, lastPolledTemp, reactorIndex)
+
+-- Modify reactor control rod levels to keep temperature with defined parameters, but
+-- wait an in-game half-hour for the temperature to stabalize before modifying again
+ function temperatureControl(reactorIndex)
+	printLog("Called as temperatureControl(reactorIndex="..reactorIndex..")")
+
+	local reactor = nil
+	reactor = reactorList[reactorIndex]
+	if not reactor then
+		printLog("reactor["..reactorIndex.."] in temperatureControl(reactorIndex="..reactorIndex..") is NOT a valid Big Reactor.")
+		return -- Invalid reactorIndex
+	else
+		printLog("reactor["..reactorIndex.."] in temperatureControl(reactorIndex="..reactorIndex..") is a valid Big Reactor.")
+
+		if reactor.getConnected() then
+			printLog("reactor["..reactorIndex.."] in temperatureControl(reactorIndex="..reactorIndex..") is connected.")
+		else
+			printLog("reactor["..reactorIndex.."] in temperatureControl(reactorIndex="..reactorIndex..") is NOT connected.")
+			return -- Disconnected reactor
+		end -- if reactor.getConnected() then
+	end
+
+	--bypass if the reactor itself is set to not be auto-controlled
+	if ((not _G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"]) or (_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"] == "false")) then
+		-- No point modifying control rod levels for temperature if the reactor is offline
+		if reactor.getActive() then
+			local rodPercentage = math.ceil(reactor.getControlRodLevel(0))
+	 		local reactorTemp = math.ceil(reactor.getFuelTemperature())
+	 		local MinReactorTemp, MaxReactorTemp = _G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMinTemp"], _G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorMaxTemp"]
+			local lastTempPoll = _G[reactorNames[reactorIndex]]["ReactorOptions"]["lastTempPoll"]
+			
+			if _G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorCruising"] then
+				--let's bypass all this math and hit the much-more-subtle cruise feature
+				--printLog("min: "..MinReactorTemp..", max: "..MaxReactorTemp..", lasttemp: "..lastTempPoll..", ri: "..reactorIndex.."  EOL")
+				reactorCruise(MaxReactorTemp, MinReactorTemp, reactorIndex)
+			else
+				-- Don't bring us to 100, that's effectively a shutdown
+				if (reactorTemp > MaxReactorTemp) and (rodPercentage ~= 99) then
+					--increase the rods, but by how much?
+					if (reactorTemp > lastTempPoll) then
+						--we're climbing, we need to get this to decrease
+						if ((reactorTemp - lastTempPoll) > 100) then
+							--we're climbing really fast, arrest it
+							if (rodPercentage + (10 * controlRodAdjustAmount)) > 99 then
+								reactor.setAllControlRodLevels(99)
+							else
+								reactor.setAllControlRodLevels(rodPercentage + (10 * controlRodAdjustAmount))
+							end
+						else
+							--we're not climbing by leaps and bounds, let's give it a rod adjustment based on temperature increase
+							 diffAmount = reactorTemp - lastTempPoll
+							diffAmount = (round(diffAmount/10, 0))/5
+							controlRodAdjustAmount = diffAmount
+							if (rodPercentage + controlRodAdjustAmount) > 99 then
+								reactor.setAllControlRodLevels(99)
+							else
+								reactor.setAllControlRodLevels(rodPercentage + controlRodAdjustAmount)
+							end
+						end --if ((reactorTemp - lastTempPoll) > 100) then
+					elseif (reactorTemp == lastTempPoll) then
+						--temperature has stagnated, kick it very lightly
+						 controlRodAdjustment = 1
+						if (rodPercentage + controlRodAdjustment) > 99 then
+							reactor.setAllControlRodLevels(99)
+						else
+							reactor.setAllControlRodLevels(rodPercentage + controlRodAdjustment)
+						end
+					end --if (reactorTemp > lastTempPoll) then
+						--worth noting that if we're above temp but decreasing, we do nothing. let it continue decreasing.
+
+				elseif (reactorTemp < MinReactorTemp) and (rodPercentage ~=0) then
+					--we're too cold. time to warm up, but by how much?
+					if (reactorTemp < lastTempPoll) then
+						--we're descending, let's stop that.
+						if ((lastTempPoll - reactorTemp) > 100) then
+							--we're headed for a new ice age, bring the heat
+							if (rodPercentage - (10 * controlRodAdjustAmount)) < 0 then
+								reactor.setAllControlRodLevels(0)
+							else
+								reactor.setAllControlRodLevels(rodPercentage - (10 * controlRodAdjustAmount))
+							end
+						else
+							--we're not descending quickly, let's bump it based on descent rate
+							 diffAmount = lastTempPoll - reactorTemp
+							diffAmount = (round(diffAmount/10, 0))/5
+							controlRodAdjustAmount = diffAmount
+							if (rodPercentage - controlRodAdjustAmount) < 0 then
+								reactor.setAllControlRodLevels(0)
+							else
+								reactor.setAllControlRodLevels(rodPercentage - controlRodAdjustAmount)
+							end
+						end --if ((lastTempPoll - reactorTemp) > 100) then
+					elseif (reactorTemp == lastTempPoll) then
+						--temperature has stagnated, kick it very lightly
+						 controlRodAdjustment = 1
+						if (rodPercentage - controlRodAdjustment) < 0 then
+							reactor.setAllControlRodLevels(0)
+						else
+							reactor.setAllControlRodLevels(rodPercentage - controlRodAdjustment)
+						end --if (rodPercentage - controlRodAdjustment) < 0 then
+
+					end --if (reactorTemp < lastTempPoll) then
+					--if we're below temp but increasing, do nothing and let it continue to rise.
+				end --if (reactorTemp > MaxReactorTemp) and (rodPercentage ~= 99) then
+
+				if ((reactorTemp > MinReactorTemp) and (reactorTemp < MaxReactorTemp)) then
+					--engage cruise mode
+					_G[reactorNames[reactorIndex]]["ReactorOptions"]["reactorCruising"] = true
+				end -- if ((reactorTemp > MinReactorTemp) and (reactorTemp < MaxReactorTemp)) then
+			end -- if reactorCruising then
+			--always set this number
+			_G[reactorNames[reactorIndex]]["ReactorOptions"]["lastTempPoll"] = reactorTemp
+			config.save(reactorNames[reactorIndex]..".options", _G[reactorNames[reactorIndex]])
+		end -- if reactor.getActive() then
+	else
+		printLog("Bypassed temperature control due to rodOverride being "..tostring(_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"]).." EOL")
+	end -- if not _G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"] then
+end -- function temperatureControl(reactorIndex)
+
+function toboolean(string)
+	if string == "false" then
+		return false
+	elseif string == "true" then
+		return true
+	end
+end
+
+-- Load saved reactor parameters if ReactorOptions file exists
+function loadReactorOptions()
+	local reactorOptions = fs.open("ReactorOptions", "r") -- See http://computercraft.info/wiki/Fs.open
+
+	if reactorOptions then
+		-- The following values were added by Lolmer
+		local monitorEnderIONetwork = reactorOptions.readLine()
+		local minimumRFTickRate = reactorOptions.readLine()
+		local debugMode = reactorOptions.readLine()
+		local minimumTemp = reactorOptions.readLine()
+		local maximumTemp = reactorOptions.readLine()
+		local minStoredEnergyPercent = reactorOptions.readLine()
+		local maxStoredEnergyPercent = reactorOptions.readLine()
+		local turbineBaseSpeed = reactorOptions.readLine()
+		--added by Mechaet
+		-- If we succeeded in reading a string, convert it
+		if monitorEnderIONetwork ~= nil then
+			setmonitorEnderIONetwork(toboolean(monitorEnderIONetwork))
+		end
+
+		if minimumRFTickRate ~= nil then
+			setminimumRFTickRate(tonumber(minimumRFTickRate))
+		end
+
+		if debugMode ~= nil then
+			setdebugMode(toboolean(debugMode))
+		end
+
+		if minimumTemp ~= nil then
+			setminimumTemp(tonumber(minimumTemp))
+			setsuggestedMinimumTemp(tonumber(minimumTemp))
+		end
+
+		if maximumTemp ~= nil then
+			setmaximumTemp(tonumber(maximumTemp))
+			setsuggestedMaximumTemp(tonumber(maximumTemp))
+		end
+
+		if minStoredEnergyPercent ~= nil then
+			setminStoredEnergyPercent(tonumber(minStoredEnergyPercent))
+		end
+
+		if maxStoredEnergyPercent ~= nil then
+			setmaxStoredEnergyPercent(tonumber(maxStoredEnergyPercent))
+		end
+
+		if turbineBaseSpeed ~= nil then
+			setturbineBaseSpeed(tonumber(turbineBaseSpeed))
+		end
+
+		reactorOptions.close()
+	end -- if reactorOptions then
+
+	-- Set default values if we failed to read any of the above
+	if monitorEnderIONetwork == nil then
+		setmonitorEnderIONetwork(false)
+	end
+
+	if minimumRFTickRate == nil then
+		setminimumRFTickRate(0)
+	end
+
+	if debugMode == nil then
+		setdebugMode(false)
+	end
+
+	if minimumTemp == nil then
+		setminimumTemp(1000)
+		setsuggestedMinimumTemp(1000)
+	end
+
+	if maximumTemp == nil then
+		setmaximumTemp(1400)
+		setsuggestedMaximumTemp(1400)
+	end
+
+	if minStoredEnergyPercent == nil then
+		setminStoredEnergyPercent(15)
+	end
+
+	if maxStoredEnergyPercent == nil then
+		setmaxStoredEnergyPercent(85)
+	end
+
+	if turbineBaseSpeed == nil then
+		setturbineBaseSpeed(1700)
+	end
+
+--save em so we have something to load later
+saveReactorOptions()
+end -- function loadReactorOptions()
+
+-- Save our reactor parameters
+function saveReactorOptions()
+	local reactorOptions = fs.open("ReactorOptions", "w") -- See http://computercraft.info/wiki/Fs.open
+
+	-- If we can save the files, save them
+	if reactorOptions then
+		 local reactorIndex = 1
+		-- The following values were added by Lolmer
+		reactorOptions.writeLine(tostring(monitorEnderIONetwork))
+		reactorOptions.writeLine(tostring(minimumRFTickRate))
+		reactorOptions.writeLine(tostring(debugMode))
+		reactorOptions.writeLine(tostring(minimumTemp))
+		reactorOptions.writeLine(tostring(maximumTemp))
+		reactorOptions.writeLine(tostring(minStoredEnergyPercent))
+		reactorOptions.writeLine(tostring(maxStoredEnergyPercent))
+		reactorOptions.writeLine(tostring(turbineBaseSpeed))
+		reactorOptions.close()
+	else
+		printLog("Failed to open file ReactorOptions for writing!")
+	end -- if reactorOptions then
+end -- function saveReactorOptions()
+
+--get reactor stats numeric index of reactor in array
+function getReactorStats(reactorIndex)
+local reactorStats = {}
+-- Grab current reactor
+	local reactor = nil
+	reactor = reactorList[reactorIndex]
+	if not reactor then
+		printLog("reactor["..reactorIndex.."] in displayReactorBars(reactorIndex="..reactorIndex..") is NOT a valid Big Reactor.")
+		return -- Invalid reactorIndex
+	else
+		printLog("reactor["..reactorIndex.."] in getReactorStats(reactorIndex="..reactorIndex..") is a valid Big Reactor.")
+		if reactor.getConnected() then
+			printLog("reactor["..reactorIndex.."] in getReactorStats(reactorIndex="..reactorIndex..") is connected.")
+		else
+			printLog("reactor["..reactorIndex.."] in getReactorStats(reactorIndex="..reactorIndex..") is NOT connected.")
+			return -- Disconnected reactor
+		end -- if reactor.getConnected() then
+	end -- if not reactor then
+local reactorStatus = nil
+if reactor.getActive() then
+	reactorStatus = "ONLINE"
+else
+	reactorStatus = "OFFLINE"
+end
+reactorStats.reactorStatus = reactorStatus
+local storedEnergy = reactor.getEnergyStored()
+reactorStats.storedEnergy = storedEnergy
+reactorStats.reactorStatus = reactorStatus
+ local fuelPercentage = round(reactor.getFuelAmount()/reactor.getFuelAmountMax()*100,1)
+reactorStats.fuelPercentage = fuelPercentage
+ local reactorTemp = math.ceil(reactor.getFuelTemperature())
+reactorStats.reactorTemp = reactorTemp
+_G[reactorNames[reactorIndex]]["ReactorOptions"]["lastTempPoll"] = reactorTemp
+config.save(reactorNames[reactorIndex]..".options",_G[reactorNames[reactorIndex]])
+ local rodPercentage = math.ceil(reactor.getControlRodLevel(0))
+reactorStats.rodPercentage = rodPercentage
+--log fuel rod percentage
+printLog("Current Rod Percentage for reactor["..reactorIndex.."] is "..rodPercentage.."% in getReactorStats(reactorIndex="..reactorIndex..").")
+	-- getEnergyProducedLastTick() is used for both RF/t (passively cooled) and mB/t (actively cooled)
+	 local energyBuffer = reactor.getEnergyProducedLastTick()
+	reactorStats.energyBuffer = energyBuffer
+	if reactor.isActivelyCooled() then
+		printLog("reactor["..reactorIndex.."] produced "..energyBuffer.." mB last tick in getReactorStats(reactorIndex="..reactorIndex..").")
+ local lastTick = energyBuffer
+reactorStats.type = "active"
+reactorStats.lastTick = lastTick
+	else
+		printLog("reactor["..reactorIndex.."] produced "..energyBuffer.." RF last tick in getReactorStats(reactorIndex="..reactorIndex..").")
+ local lastTick = energyBuffer
+reactorStats.type = "passive"
+reactorStats.lastTick = lastTick
+	end
+if not reactor.isActivelyCooled() then
+		printLog("reactor["..reactorIndex.."] in getReactorStats(reactorIndex="..reactorIndex..") is NOT an actively cooled reactor.")
+ local curStoredEnergyPercent = getReactorStoredEnergyBufferPercent(reactor)
+reactorStats.energyBufferPercent = curStoredEnergyPercent
+	else
+		printLog("reactor["..reactorIndex.."] in getReactorStats(reactorIndex="..reactorIndex..") is an actively cooled reactor.")
+	end
+ local reactorRodOverrideStatus = nil
+if not _G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"] then
+		printLog("Reactor Rod Override status is: "..tostring(_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"]).." EOL")
+		reactorRodOverrideStatus = "Disabled"
+	else
+		printLog("Reactor Rod Override status is: "..tostring(_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"]).." EOL")
+		reactorRodOverrideStatus = "Enabled"
+	end -- if not reactorRodOverride then
+reactorStats.overrideStatus = reactorRodOverrideStatus
+	printLog("reactorRodOverrideStatus is \""..reactorRodOverrideStatus.."\" in getReactorStats(reactorIndex="..reactorIndex..").")
+ local fuelReactivity = reactor.getFuelReactivity()
+reactorStats.fuelReactivity = fuelReactivity
+ local fuelUsedPerTick = round(reactor.getFuelConsumedLastTick(),3)
+reactorStats.fuelUsedPerTick = fuelUsedPerTick
+ local fuelWaste = reactor.getWasteAmount()
+reactorStats.fuelWaste = fuelWaste
+return reactorStats
+end
+
+function getTurbineStats(turbineIndex)
+	printLog("Called as getTurbineStats(turbineIndex="..turbineIndex..").")
+
+	-- Grab current turbine
+	local turbine = nil
+	turbine = turbineList[turbineIndex]
+	local turbineStats = {}
+	if not turbine then
+		printLog("turbine["..turbineIndex.."] in getTurbineStats(turbineIndex="..turbineIndex..") is NOT a valid Big Turbine.")
+		return -- Invalid turbineIndex
+	else
+		printLog("turbine["..turbineIndex.."] in getTurbineStats(turbineIndex="..turbineIndex..") is a valid Big Turbine.")
+		if turbine.getConnected() then
+			printLog("turbine["..turbineIndex.."] in getTurbineStats(turbineIndex="..turbineIndex..") is connected.")
+		else
+			printLog("turbine["..turbineIndex.."] in getTurbineStats(turbineIndex="..turbineIndex..") is NOT connected.")
+			return -- Disconnected turbine
+		end -- if turbine.getConnected() then
+	end -- if not turbine then
+
+	-- variable to match the view on the monitor
+if _G[turbineNames[turbineIndex]]["TurbineOptions"]["flowOverride"] then
+turbineStats.turbineFlowRateOverride = "Enabled"
+else
+turbineStats.turbineFlowRateOverride = "Disabled"
+end
+ local turbineBaseSpeed = tonumber(_G[turbineNames[turbineIndex]]["TurbineOptions"]["BaseSpeed"])
+ local lastSpeed = math.ceil(turbine.getRotorSpeed())
+_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastSpeed"] = lastSpeed
+config.save(turbineNames[turbineIndex]..".options",_G[turbineNames[turbineIndex]])
+turbineStats.turbineLastSpeed = lastSpeed
+turbineStats.turbineBaseSpeed = turbineBaseSpeed
+ local turbineFlowRate = tonumber(_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastFlow"])
+turbineStats.turbineFlowRate = turbineFlowRate
+ local turbineStatus = nil
+if turbine.getActive() then
+			turbineStatus = "ONLINE"
+		else
+			turbineStatus = "OFFLINE"
+		end -- if turbine.getActive() then
+turbineStats.turbineStatus = turbineStatus
+ local totalEnergy = turbine.getEnergyStored()
+turbineStats.totalEnergy = totalEnergy
+ local totalSteamStored = turbine.getInputAmount()
+turbineStats.totalSteamStored = totalSteamStored
+ local totalCoolantStored = turbine.getOutputAmount()
+turbineStats.totalCoolantStored = totalCoolantStored
+ local perTick = turbine.getEnergyProducedLastTick()
+turbineStats.perTick = perTick
+ local percentSteam = totalSteamStored / turbine.getFluidAmountMax() * 100
+turbineStats.percentSteam = percentSteam
+ local percentCoolant = totalCoolantStored / turbine.getFluidAmountMax() * 100
+turbineStats.percentCoolant = percentCoolant
+return turbineStats
+end
+
+function toggleTurbineActive(turbineIndex, manual)
+-- Grab current turbine
+local turbine = nil
+turbine = turbineList[turbineIndex]
+turbine.setActive(not turbine.getActive()) -- Toggle turbine status
+	if manual then
+		_G[turbineNames[turbineIndex]]["TurbineOptions"]["autoStart"] = turbine.getActive()
+		config.save(turbineNames[turbineIndex]..".options", _G[turbineNames[turbineIndex]])
+	end
+end
+
+function setTurbineRPM(updown, turbineIndex)
+ local turbine = nil
+turbine = turbineList[turbineIndex]
+local turbineBaseSpeed = _G[turbineNames[turbineIndex]]["TurbineOptions"]["BaseSpeed"]
+if(updown) then
+printLog("Increase to Turbine RPM requested by "..progName.." GUI in setTurbineRPM(turbineIndex="..turbineIndex..").")
+		rpmRateAdjustment = 909
+		newTurbineBaseSpeed = turbineBaseSpeed + rpmRateAdjustment
+		if newTurbineBaseSpeed > 2726 then
+			newTurbineBaseSpeed = 2726
+		end
+else
+printLog("Decrease to Turbine RPM requested by "..progName.." GUI in setTurbineRPM(turbineIndex="..turbineIndex..").")
+		rpmRateAdjustment = 909
+		newTurbineBaseSpeed = turbineBaseSpeed - rpmRateAdjustment
+		if newTurbineBaseSpeed < 908 then
+			newTurbineBaseSpeed = 908
+		end
+end
+		
+_G[turbineNames[turbineIndex]]["TurbineOptions"]["BaseSpeed"] = newTurbineBaseSpeed
+		config.save(turbineNames[turbineIndex]..".options", _G[turbineNames[turbineIndex]])
+end
+
+function setTurbineFlowRate(updown, turbineIndex)
+ local turbine = nil
+turbine = turbineList[turbineIndex]
+ turbineFlowRate = tonumber(_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastFlow"])
+if updown == "+" then
+	printLog("Increase to Flow Rate requested by "..progName.." GUI in setTurbineFlowRate(turbineIndex="..turbineIndex..").")
+		--Increase rod level by amount
+		newTurbineFlowRate = turbineFlowRate + flowRateAdjustAmount
+		if newTurbineFlowRate > 2000 then
+			newTurbineFlowRate = 2000
+		end
+
+		-- Check bounds [0,2000]
+		if newTurbineFlowRate > 2000 then
+			newTurbineFlowRate = 2000
+		elseif newTurbineFlowRate < 0 then
+			newTurbineFlowRate = 25 -- Don't go to zero, might as well power off
+		end
+elseif updown == "-" then
+printLog("Decrease to Flow Rate requested by "..progName.." GUI in setTurbineFlowRate(turbineIndex="..turbineIndex..").")
+		--Decrease rod level by amount
+		newTurbineFlowRate = turbineFlowRate - flowRateAdjustAmount
+		if newTurbineFlowRate < 0 then
+			newTurbineFlowRate = 0
+		end
+-- Check bounds [0,2000]
+		if newTurbineFlowRate > 2000 then
+			newTurbineFlowRate = 2000
+		elseif newTurbineFlowRate < 0 then
+			newTurbineFlowRate = 25 -- Don't go to zero, might as well power off
+		end
+end
+turbine.setFluidFlowRateMax(newTurbineFlowRate)
+		
+		-- Save updated Turbine Flow Rate
+		turbineFlowRate = math.ceil(newTurbineFlowRate)
+		_G[turbineNames[turbineIndex]]["TurbineOptions"]["LastFlow"] = turbineFlowRate
+		config.save(turbineNames[turbineIndex]..".options", _G[turbineNames[turbineIndex]])
+end
+
+
+function setTurbineManualControl(turbineIndex)
+if ((_G[turbineNames[turbineIndex]]["TurbineOptions"]["flowOverride"]) or (_G[turbineNames[turbineIndex]]["TurbineOptions"]["flowOverride"] == "true")) then
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["flowOverride"] = false
+			else
+				_G[turbineNames[turbineIndex]]["TurbineOptions"]["flowOverride"] = true
+			end
+		config.save(turbineNames[turbineIndex]..".options", _G[turbineNames[turbineIndex]])
+end
+
+function reactorCruiseInit()
+local activeReactors={}
+local inactiveReactors={}
+	for reactorIndex = 1, #reactorList do
+ 		local reactor = nil
+		reactor = reactorList[reactorIndex]
+			if (reactor.getActive()) and (_G[reactorNames[reactorIndex]]["ReactorOptions"]["autoStart"]) then
+				table.insert(activeReactors,reactorIndex)
+			elseif _G[reactorNames[reactorIndex]]["ReactorOptions"]["autoStart"] then
+				table.insert(inactiveReactors, reactorIndex)
+			end
+	end
+	if RFProduced < minimumRFTickRate or (monitorEnderIONetwork and updateEnderIOCapBanks(true) < minStoredEnergyPercent) or totalEnergyBuffers < minStoredEnergyPercent then
+		local toggled = false
+		for index, value in ipairs(activeReactors) do
+			--already set the baseline start bumping max temp by 100 till we get request or reactors are maxed out.
+			if baseline then
+				_G[reactorNames[value]]["ReactorOptions"]["reactorMaxTemp"] = _G[reactorNames[value]]["ReactorOptions"]["reactorMaxTemp"] + 100
+				_G[reactorNames[value]]["ReactorOptions"]["reactorMinTemp"] = _G[reactorNames[value]]["ReactorOptions"]["reactorMinTemp"] + 100
+				suggestedMaxTemp = _G[reactorNames[value]]["ReactorOptions"]["reactorMaxTemp"]
+				suggestedMinTemp = _G[reactorNames[value]]["ReactorOptions"]["reactorMinTemp"]
+				local reactor = nil
+				reactor = reactorList[value]
+				--if actively cooled must manage turbines also
+				if reactor.isActivelyCooled() then
+					turbineCruise()
+				end
+				local reactorTemp = math.ceil(reactor.getFuelTemperature())
+				if reactorTemp <= suggestedMaxTemp*2 and #activeReactors > 1 and toggled == false then
+						--too hot kill a reactor
+					    if reactor.getActive() == true then
+							toggleReactor(activeReactors[#activeReactors], false)
+							--add to reactors to work with
+							table.insert(inactiveReactors, activeReactors[#activeReactors])
+							--remove from inactiveReactors
+							table.remove(activeReactors, #activeReactors)
+						end
+						toggled = true
+				elseif reactorTemp >= suggestedMinTemp/2 and #inactiveReactors > 0 and toggled == false then
+						if reactor.getActive() == false then
+							toggleReactor(inactiveReactors[#inactiveReactors], false)
+							--add to reactors to work with
+							table.insert(activeReactors, inactiveReactors[#inactiveReactors])
+							--remove from inactiveReactors
+							table.remove(inactiveReactors, #inactiveReactors)
+						end
+						toggled = true
+				end
+				--don't save it intentionally may end up with a condition where reactors are maxed out and still not providing needed power
+			end
+			--first run sets baseline temp at user defined see if we Got Enough POWA now.
+			temperatureControl(value)
+		end
+		baseline = true
+	elseif RFProduced > minimumRFTickRate or (monitorEnderIONetwork and updateEnderIOCapBanks(true) > maxStoredEnergyPercent) or totalEnergyBuffers > maxStoredEnergyPercent then
+		local toggled = false
+		for index, value in ipairs(activeReactors) do
+			if baseline then
+				suggestedMaxTemp = _G[reactorNames[value]]["ReactorOptions"]["reactorMaxTemp"]
+				suggestedMinTemp = _G[reactorNames[value]]["ReactorOptions"]["reactorMinTemp"]
+				local reactor = nil
+				reactor = reactorList[value]
+				--if actively cooled must manage turbines also
+				if reactor.isActivelyCooled() then
+					turbineCruise()
+				else
+					if (RFProduced - reactor.getEnergyProducedLastTick()) < minimumRFTickRate then
+						--dont disable a reactor if its going to drop us below minimim tick rate
+						toggled = true
+					end
+				end
+				local reactorTemp = math.ceil(reactor.getFuelTemperature())
+				if suggestedMaxTemp <= 400 then
+					_G[reactorNames[value]]["ReactorOptions"]["reactorMaxTemp"] = 400
+					_G[reactorNames[value]]["ReactorOptions"]["reactorMinTemp"] = 300
+					if reactorTemp <= suggestedMaxTemp*2 and #activeReactors > 1 and toggled == false then
+						--too hot kill a reactor
+						if reactor.getActive() == true then
+						toggleReactor(activeReactors[#activeReactors], false)
+						--add to reactors to work with
+						table.insert(inactiveReactors, activeReactors[#activeReactors])
+						--remove from inactiveReactors
+						table.remove(activeReactors, #activeReactors)
+						end
+						toggled = true
+					elseif reactorTemp >= suggestedMinTemp/2 and #inactiveReactors > 0 and toggled == false then
+						if reactor.getActive() == false then
+						toggleReactor(inactiveReactors[#inactiveReactors], false)
+						--add to reactors to work with
+						table.insert(activeReactors, inactiveReactors[#inactiveReactors])
+						--remove from inactiveReactors
+						table.remove(inactiveReactors, #inactiveReactors)
+						end
+						toggled = true
+					end
+				else
+				_G[reactorNames[value]]["ReactorOptions"]["reactorMaxTemp"] = _G[reactorNames[value]]["ReactorOptions"]["reactorMaxTemp"] - 100
+				_G[reactorNames[value]]["ReactorOptions"]["reactorMinTemp"] = _G[reactorNames[value]]["ReactorOptions"]["reactorMinTemp"] - 100
+				end
+			end
+		temperatureControl(value)
+		end
+		baseline = true
+	end
+end
+
+function turbineCruise()
+local activeTurbines={}
+local inactiveTurbines={}
+	for turbineIndex = 1, #turbineList do
+ 		local turbine = nil
+		turbine = turbineList[turbineIndex]
+			if (turbine.getActive()) and (_G[turbineNames[turbineIndex]]["TurbineOptions"]["autoStart"]) then
+				table.insert(activeTurbines,turbineIndex)
+			elseif _G[turbineNames[turbineIndex]]["TurbineOptions"]["autoStart"] then
+				table.insert(inactiveTurbines, turbineIndex)
+			end
+	end
+	if RFProduced < minimumRFTickRate or (monitorEnderIONetwork and updateEnderIOCapBanks(true) < minStoredEnergyPercent) or totalEnergyBuffers < minStoredEnergyPercent then
+	local toggled = false	
+		for index, value in ipairs(activeTurbines) do
+		local turbine = nil
+		local turbine = turbineList[value]
+			if turbine.getActive() then
+				local turbineBaseSpeed = tonumber(_G[turbineNames[value]]["TurbineOptions"]["BaseSpeed"])
+				local lastTurbineSpeed = tonumber(_G[turbineNames[value]]["TurbineOptions"]["LastSpeed"])
+				local rotorSpeed = math.ceil(turbine.getRotorSpeed())
+				if rotorSpeed >= turbineBaseSpeed and AverageRotorSpeed >= turbineBaseSpeed then
+					--reached target speed not getting anything else outta this lets activate another 
+					if turbine.getActive() and toggled == false and #inactiveTurbines > 0 then
+						toggleTurbineActive(inactiveTurbines[#inactiveTurbines], false)
+						--add to reactors to work with
+						table.insert(activeTurbines, inactiveTurbines[#inactiveTurbines])
+						--remove from inactiveReactors
+						table.remove(inactiveTurbines, #inactiveTurbines)
+					end
+					toggled = true
+				elseif rotorSpeed < lastTurbineSpeed then
+					--slowing down kill it
+					if turbine.getActive() and toggled == false and #activeTurbines > 1 then
+						toggleTurbineActive(activeTurbines[#activeTurbines], false)
+						--add to reactors to work with
+						table.insert(inactiveTurbines, activeTurbines[#activeTurbines])
+						--remove from inactiveReactors
+						table.remove(activeTurbines, #activeTurbines)
+					end
+					toggled = true
+				end
+			end
+		end
+	elseif RFProduced > minimumRFTickRate or (monitorEnderIONetwork and updateEnderIOCapBanks(true) > maxStoredEnergyPercent) or totalEnergyBuffers > maxStoredEnergyPercent then
+	local toggled = false
+		for index, value in ipairs(activeTurbines) do
+		local turbine = nil
+		local turbine = turbineList[value]
+		if (RFProduced - turbine.getEnergyProducedLastTick()) < minimumRFTickRate then
+		--dont disable a turbine if its going to drop us below minimim tick rate
+		toggled = true
+		end
+			if turbine.getActive() and toggled == false and #activeTurbines > 1 then
+				toggleTurbineActive(activeTurbines[#activeTurbines], false)
+				--add to reactors to work with
+				table.insert(inactiveTurbines, activeTurbines[#activeTurbines])
+				--remove from inactiveReactors
+				table.remove(activeTurbines, #activeTurbines)
+			end
+			toggled = true
+		end
+	end
+end
+
+function getAllTurbineStats()
+ local averageRotorSpeed = nil
+ local sum = 0
+ local count = 0
+ local turbineResult = {}
+ turbineResult.totalRFPerTick = 0
+ turbineResult.totalStoredEnergy = 0
+ turbineResult.countActive = 0
+ turbineResult.countInactive = 0
+ local onlineTurbines = {}
+ local offlineTurbines = {}
+for turbineIndex = 1, #turbineList do
+ local turbineStats = getTurbineStats(turbineIndex)
+if turbineStats.turbineStatus == "ONLINE" then
+table.insert(onlineTurbines, turbineIndex)
+turbineResult.totalRFPerTick = turbineResult.totalRFPerTick + turbineStats.perTick
+sum = sum + turbineStats.turbineLastSpeed
+count = count + 1
+turbineResult.countActive = turbineResult.countActive + 1
+else
+turbineResult.countInactive = turbineResult.countInactive + 1
+end
+RFProduced = turbineResult.totalRFPerTick
+turbineResult.averageRotorSpeed = sum / count
+AverageRotorSpeed = turbineResult.averageRotorSpeed
+turbineResult.onlineTurbines = onlineTurbines
+turbineResult.totalStoredEnergy = turbineResult.totalStoredEnergy + turbineStats.totalEnergy
+totalEnergyBuffers = round((turbineResult.totalStoredEnergy / count)/10000*100, 1)
+end
+return turbineResult
+end
+
+function getAllReactorStats()
+ local sumFuelPercentage = 0
+ local sumFuelReactivity = 0
+ local sumReactorTemp = 0
+ local count = 0  
+ local reactorResult = {}
+ reactorResult.countActive = 0
+ reactorResult.countInactive = 0
+ reactorResult.totalRFPerTick = 0
+ reactorResult.totalStoredEnergy = 0
+ reactorResult.totalFuelUsedPerTick = 0
+ local onlineReactors = {}
+	for reactorIndex = 1, #reactorList do
+ 		local reactorStats = getReactorStats(reactorIndex)
+		if reactorStats.reactorStatus == "ONLINE" then
+			count = count + 1
+			table.insert(onlineReactors, reactorIndex)
+			reactorResult.countActive = reactorResult.countActive + 1
+			if reactorStats.type == "passive" then
+				reactorResult.totalRFPerTick = reactorResult.totalRFPerTick + reactorStats.energyBuffer
+				RFProduced = reactorResult.totalRFPerTick
+				reactorResult.totalStoredEnergy = reactorResult.totalStoredEnergy + reactorStats.storedEnergy
+				totalEnergyBuffers = round((reactorResult.totalStoredEnergy / count)/100000*100, 1)
+			end
+			sumFuelPercentage = sumFuelPercentage + reactorStats.fuelPercentage
+			sumFuelReactivity = sumFuelReactivity + reactorStats.fuelReactivity
+			sumReactorTemp = sumReactorTemp + reactorStats.reactorTemp
+			reactorResult.totalFuelUsedPerTick = reactorResult.totalFuelUsedPerTick + reactorStats.fuelUsedPerTick
+		else
+			reactorResult.countInactive = reactorResult.countInactive + 1
+		end
+		reactorResult.averageFuelReactivity = sumFuelReactivity / count
+		reactorResult.averageFuelPercentage = sumFuelPercentage / count
+		reactorResult.averageReactorTemp = sumReactorTemp / count
+		reactorResult.onlineReactors = onlineReactors
+	end
+return reactorResult
+end
+
+function setRodPercentage(updown,reactorIndex)
+ local reactor = nil
+reactor = reactorList[reactorIndex]
+
+ rodPercentage = math.ceil(reactor.getControlRodLevel(0))
+if updown == "-" then
+newRodPercentage = rodPercentage - (5 * controlRodAdjustAmount)
+		if newRodPercentage < 0 then
+			newRodPercentage = 0
+  end
+elseif updown == "+" then
+--Increase rod level by amount
+		newRodPercentage = rodPercentage + (5 * controlRodAdjustAmount)
+		if newRodPercentage > 100 then
+			newRodPercentage = 100
+		end
+end
+
+printLog("Setting reactor["..reactorIndex.."] Rod Levels to "..newRodPercentage.."% in displayReactorBars(reactorIndex="..reactorIndex..",monitorIndex="..monitorIndex..").")
+		reactor.setAllControlRodLevels(newRodPercentage)
+		_G[reactorNames[reactorIndex]]["ReactorOptions"]["baseControlRodLevel"] = newRodPercentage
+		
+		-- Save updated rod percentage
+		config.save(reactorNames[reactorIndex]..".options", _G[reactorNames[reactorIndex]])
+end
+
+function setRodManualControl(reactorIndex)
+_G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"] = not _G[reactorNames[reactorIndex]]["ReactorOptions"]["rodOverride"]
+			config.save(reactorNames[reactorIndex]..".options", _G[reactorNames[reactorIndex]])
+end
+
+function toggleReactor(reactorIndex,manual)
+local reactor = nil
+reactor = reactorList[reactorIndex]
+				reactor.setActive(not reactor.getActive()) -- Toggle reactor status
+if manual then
+					_G[reactorNames[reactorIndex]]["ReactorOptions"]["autoStart"] = reactor.getActive()
+				config.save(reactorNames[reactorIndex]..".options", _G[reactorNames[reactorIndex]])
+end
+end
+
+function enderIOOverride()
+if monitorEnderIONetwork == true then
+enderioList  = { }
+enderioList,enderioNames = getDevices("tile_enderio_blockcapacitorbank_name")
+if #enderioList == 0 then
+		printLog("No capaciter banks found!")
+		error("Can't find any capaciter banks if you don't have any disable the switch!")
+	else
+for enderioIndex = 1, #enderioList do
+			capbank = nil
+			capbank = enderioList[enderioIndex]
+
+			if not capbank then
+				printLog("enderioList["..enderioIndex.."] in enderIOOverride() is NOT a valid Capaciter Bank.")
+
+				table.remove(enderioList, enderioIndex) -- Remove invalid reactor from list
+				if enderioIndex ~= #enderioList then    -- If we're not at the end, clean up
+					enderioIndex = enderioIndex - 1 -- We just removed an element
+				end -- enderioIndex ~= #enderioList then
+				return -- Invalid enderioIndex
+			else
+				printLog("CapaciterBank["..enderioIndex.."] in enderIOOverride() is a valid Capaciter Bank.")
+			end
+		end
+	end
+end
+end
+
+
+function updateEnderIOCapBanks(numeric)
+    if monitorEnderIONetwork then
+         local iocellmax = 0
+         local iocellcurr = 0
+         local res = nil
+            for enderioIndex = 1, #enderioList do
+                local capbank = nil
+                capbank = enderioList[enderioIndex]
+                iocellmax = iocellmax+capbank.getMaxEnergyStored("unknown")
+                iocellcurr = iocellmax+capbank.getEnergyStored("unknown")
+            end
+            if numeric then
+                res = iocellcurr/iocellmax*100
+            else
+                res = iocellcurr.."/"..iocellmax.." RF"
+            end
+        return res
+    end
+end

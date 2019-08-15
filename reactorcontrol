@@ -1,0 +1,404 @@
+--setup bedrock api
+local bedrockPath='/' if OneOS then OneOS.LoadAPI('/System/API/Bedrock.lua', false)elseif fs.exists(bedrockPath..'/Bedrock')then os.loadAPI(bedrockPath..'/Bedrock')else if http then print('Downloading Bedrock...')local h=http.get('http://pastebin.com/raw.php?i=0MgKNqpN')if h then local f=fs.open(bedrockPath..'/Bedrock','w')f.write(h.readAll())f.close()h.close()os.loadAPI(bedrockPath..'/Bedrock')else error('Failed to download Bedrock. Is your internet working?') end else error('This program needs to download Bedrock to work. Please enable HTTP.') end end if Bedrock then Bedrock.BasePath = bedrockPath Bedrock.ProgramPath = shell.getRunningProgram() end
+--first run
+local firstrun = true
+--get all stats global
+local reactorStats = nil
+local turbineStats = nil
+lastTubineStat = nil
+lastReactorStat = nil
+--turbineIndex = nil
+--reactorIndex = nil
+--find in table used for update functions
+local function inTable(tbl, item)
+    for key, value in pairs(tbl) do
+        if value == item then return true end
+    end
+    return false
+end
+
+--add commas to numbers to make stuff look nicer
+function comma_value(n) -- credit http://richard.warburton.it
+	local left,num,right = string.match(n,'^([^%d]*%d)(%d*)(.-)$')
+	return left..(num:reverse():gsub('(%d%d%d)','%1,'):reverse())..right
+end
+
+local program = Bedrock:Initialise()
+--update function for main view stats
+function updateGlobalStats()
+reactorStats = bigreactors.getAllReactorStats()
+turbineStats = bigreactors.getAllTurbineStats()
+if reactorStats.totalRFPerTick ~= nil then
+program:GetObject('reactorType').Text = "Actively Cooled"
+program:GetObject('reactorType').BackgroundColour = "blue"
+program:RemoveObject('rtotalStoredEnergy')
+else
+	if reactorStats.totalRFPerTick > 10000 then
+		local formatted = comma_value(Helpers.Round(reactorStats.totalRFPerTick / 1000,1))
+		program:GetObject('reactorType').Text = "Energy: "..formatted.." kRF/t"
+	else
+		local formatted = comma_value(Helpers.Round(reactorStats.totalRFPerTick,0))
+		program:GetObject('reactorType').Text = "Energy: "..formatted.." RF/t"
+	end
+
+	if reactorStats.totalStoredEnergy > 10000 then
+		local formatted = comma_value(Helpers.Round(reactorStats.totalStoredEnergy / 1000,1))
+		program:GetObject('rtotalStoredEnergy').Text = "RF Stored: "..formatted.." kRF"
+	else
+		local formatted = comma_value(Helpers.Round(reactorStats.totalStoredEnergy,0))
+		program:GetObject('rtotalStoredEnergy').Text = "RF Stored: "..formatted.." RF"
+	end
+program:RemoveObject('activeTurbines')
+program:RemoveObject('averageRotorSpeed')
+program:RemoveObject('ttotalStoredEnergy')
+program:RemoveObject('rfTick')
+program:RemoveObject('turbineHeading')
+program:GetObject('reactorHeading').Width="100%"
+end
+program:GetObject('activeReactors').Text = "Active Reactors:"..reactorStats.countActive.."/"..reactorStats.countActive + reactorStats.countInactive
+program:GetObject('averageFuelReactivity').Text = "Fuel Reactivity:"..Helpers.Round(reactorStats.averageFuelReactivity, 0).."%"
+program:GetObject('fuelUsedPerTick').Text =  "Fuel Used:"..Helpers.Round(reactorStats.totalFuelUsedPerTick,2).." mB/t"
+program:GetObject('averageFuelPercentage').Value = reactorStats.averageFuelPercentage
+program:GetObject('averageReactorTemp').Text = "Tempreture:"..Helpers.Round(reactorStats.averageReactorTemp,0).." C"
+if turbineStats.countActive > 0 or turbineStats.countInactive > 0 then
+program:GetObject('activeTurbines').Text = "Active Turbines:"..turbineStats.countActive.."/"..turbineStats.countActive + turbineStats.countInactive
+program:GetObject('averageRotorSpeed').Text = "Rotor Speed:"..Helpers.Round(turbineStats.averageRotorSpeed,0).." RPM"
+	if turbineStats.totalRFPerTick > 10000 then
+		local formatted = comma_value(Helpers.Round(turbineStats.totalRFPerTick / 1000,1))
+		program:GetObject('rfTick').Text = "Energy: "..formatted.." kRF/t"
+	else
+		local formatted = comma_value(Helpers.Round(turbineStats.totalRFPerTick,0))
+		program:GetObject('rfTick').Text = "Energy: "..formatted.." RF/t"
+	end
+
+	if turbineStats.totalStoredEnergy > 10000 then
+		local formatted = comma_value(Helpers.Round(turbineStats.totalStoredEnergy / 1000,1))
+		program:GetObject('ttotalStoredEnergy').Text = "RF Stored:"..formatted.." kRF"
+	else
+		local formatted = comma_value(Helpers.Round(turbineStats.totalStoredEnergy,0))
+		program:GetObject('ttotalStoredEnergy').Text = "RF Stored:"..formatted.." RF"
+	end
+end
+end
+
+--update reactor page
+function updateReactor(reactorIndex)
+lastReactorStat = bigreactors.getReactorStats(reactorIndex)
+if lastReactorStat.reactorStatus == "ONLINE" then
+program:GetObject('onoff').Text = "Active"
+program:GetObject('onoff').Toggle = true
+else
+program:GetObject('onoff').Text = "Inctive"
+end
+if lastReactorStat.overrideStatus == "Enabled" then
+program:GetObject('setRodOverride').Toggle = true
+program:GetObject('setRodOverride').Text = "Rod Override: Enabled"
+else
+program:GetObject('setRodOverride').Text = "Rod Override: Disabled"
+end
+program:GetObject('type').Text = firstToUpper(lastReactorStat.type).." Cooling"
+program:GetObject('controlRod').Text=lastReactorStat.rodPercentage.."%"
+program:GetObject('overrideStatus').Text="Manual Control: "..lastReactorStat.overrideStatus
+if lastReactorStat.type == "active" then
+	if lastReactorStat.lastTick > 1000 then
+		program:GetObject('steamortick').Text="Steam:"..Helpers.Round(lastReactorStat.lastTick / 1000, 0).."B/t"
+	else
+		program:GetObject('steamortick').Text="Steam:"..Helpers.Round(lastReactorStat.lastTick, 0).."mB/t"
+	end
+program:RemoveObject('storedEnergy')
+elseif lastReactorStat.type == "passive" then
+	if lastReactorStat.lastTick > 10000 then
+		program:GetObject('steamortick').Text="Energy:"..comma_value(Helpers.Round(lastReactorStat.lastTick / 1000,0)).."kRF/t"
+	else
+		program:GetObject('steamortick').Text="Energy:"..comma_value(Helpers.Round(lastReactorStat.lastTick,0)).."RF/t"
+	end
+	if lastReactorStat.storedEnergy > 10000 then
+		program:GetObject('storedEnergy').Text="Stored RF "..comma_value(Helpers.Round(lastReactorStat.storedEnergy / 1000,0)).." kRF"
+	else
+		program:GetObject('storedEnergy').Text="Stored RF "..comma_value(Helpers.Round(lastReactorStat.storedEnergy,0)).." RF"
+	end
+end
+program:GetObject('fuelReactivity').Text="Fuel Reactivity: "..Helpers.Round(lastReactorStat.fuelReactivity,0).."%"
+	if lastReactorStat.fuelWaste > 1000 then
+		local waste = comma_value(Helpers.Round(lastReactorStat.fuelWaste / 1000, 0))
+		program:GetObject('fuelUsedPerTick').Text="Fuel Useage: "..Helpers.Round(lastReactorStat.fuelUsedPerTick,2).." mb/t | Waste: "..waste.."B/t"
+	else
+		local waste = comma_value(Helpers.Round(lastReactorStat.fuelWaste,0))
+		program:GetObject('fuelUsedPerTick').Text="Fuel Useage: "..Helpers.Round(lastReactorStat.fuelUsedPerTick,2).." mb/t | Waste: "..waste.."mB/t"
+	end
+program:GetObject('reactorTemp').Text="Temprature: "..lastReactorStat.reactorTemp.." C"
+program:GetObject('rfuelPercentage').Value=lastReactorStat.fuelPercentage
+end
+
+--update turbine page
+function updateTurbine(turbineIndex)
+lastTurbineStat = bigreactors.getTurbineStats(turbineIndex)
+if lastTurbineStat.turbineStatus == "ONLINE" then
+program:GetObject('onoff').Text = "Active"
+program:GetObject('onoff').Toggle = true
+else
+program:GetObject('onoff').Text = "Inctive"
+end
+program:GetObject('speed').Text = "Rotor Speed:"..lastTurbineStat.turbineLastSpeed.." RPM"
+program:GetObject('flowRate').Text = lastTurbineStat.turbineFlowRate.." mb/t"
+program:GetObject('steamStored').Text = "Steam:"..lastTurbineStat.totalSteamStored.." mb"
+program:GetObject('coolantStored').Text = "Coolant:"..lastTurbineStat.totalCoolantStored.." mb"
+program:GetObject('overrideStatus').Text = "Manual Control:"..lastTurbineStat.turbineFlowRateOverride
+program:GetObject('energyBuffer').Text = "Energy: "..comma_value(Helpers.Round(lastTurbineStat.totalEnergy,0)).." RF"
+program:GetObject('energyPerTick').Text = "Energy: "..comma_value(Helpers.Round(lastTurbineStat.perTick,0)).." RF/t"
+end
+
+function getSettingsValues()
+program:GetObject('suggestedMin').Text = "Suggested Minimum Temprature is: "..bigreactors.getsuggestedMinTemp().." C"
+program:GetObject('suggestedMax').Text = "Suggested Maximum Temprature is: "..bigreactors.getsuggestedMaxTemp().." C"
+if bigreactors.getdebugMode() then
+program:GetObject('debugModeChooser').Text = "True"
+program:GetObject('debugModeChooser').Toggle = true
+elseif bigreactors.getdebugMode() == false then
+program:GetObject('debugModeChooser').Text = "False"
+end
+program:GetObject('debugModeChooser').Toggle = bigreactors.getdebugMode()
+if bigreactors.getmonitorEnderIONetwork() then
+program:GetObject('monitorEnderIONetworkChooser').Text = "True"
+program:GetObject('monitorEnderIONetworkChooser').Toggle = true
+elseif bigreactors.getmonitorEnderIONetwork() == false then
+program:GetObject('monitorEnderIONetworkChooser').Text = "False"
+end
+program:GetObject('monitorEnderIONetworkChooser').Toggle = bigreactors.getmonitorEnderIONetwork()
+program:GetObject('minimumRFTickRateChooser').Value = bigreactors.getminimumRFTickRate() / 1000
+program:GetObject('minimumTempChooser').Value = bigreactors.getminimumTemp()
+program:GetObject('maximumTempChooser').Value = bigreactors.getmaximumTemp()
+program:GetObject('maxStoredEnergyPercentChooser').Value = bigreactors.getmaxStoredEnergyPercent()
+program:GetObject('minStoredEnergyPercentChooser').Value = bigreactors.getminStoredEnergyPercent()
+program:GetObject('turbineBaseSpeedChooser').Value = bigreactors.getturbineBaseSpeed()
+end
+
+function setSettingsValues()
+bigreactors.setdebugMode(program:GetObject('debugModeChooser').Toggle)
+bigreactors.setmonitorEnderIONetwork(program:GetObject('monitorEnderIONetworkChooser').Toggle)
+bigreactors.setminimumRFTickRate(program:GetObject('minimumRFTickRateChooser').Value * 1000)
+bigreactors.setmaximumTemp(program:GetObject('maximumTempChooser').Value)
+bigreactors.setminimumTemp(program:GetObject('minimumTempChooser').Value)
+bigreactors.setmaxStoredEnergyPercent(program:GetObject('maxStoredEnergyPercentChooser').Value)
+bigreactors.setminStoredEnergyPercent(program:GetObject('minStoredEnergyPercentChooser').Value)
+bigreactors.setturbineBaseSpeed(program:GetObject('turbineBaseSpeedChooser').Value)
+bigreactors.saveReactorOptions()
+end
+
+--settings click event
+function settingsClick(self, event, side, x, y)
+	program.Timers = {}
+	program:LoadView('settings')
+end
+
+function firstToUpper(str)
+    return (str:gsub("^%l", string.upper))
+end
+
+function dumpvar(data)
+    -- cache of tables already printed, to avoid infinite recursive loops
+    local tablecache = {}
+    local buffer = ""
+    local padder = "    "
+ 
+    local function _dumpvar(d, depth)
+        local t = type(d)
+        local str = tostring(d)
+        if (t == "table") then
+            if (tablecache[str]) then
+                -- table already dumped before, so we dont
+                -- dump it again, just mention it
+                buffer = buffer.."<"..str..">\n"
+            else
+                tablecache[str] = (tablecache[str] or 0) + 1
+                buffer = buffer.."("..str..") {\n"
+                for k, v in pairs(d) do
+                    buffer = buffer..string.rep(padder, depth+1).."["..k.."] => "
+                    _dumpvar(v, depth+1)
+                end
+                buffer = buffer..string.rep(padder, depth).."}\n"
+            end
+        elseif (t == "number") then
+            buffer = buffer.."("..t..") "..str.."\n"
+        else
+            buffer = buffer.."("..t..") \""..str.."\"\n"
+        end
+    end
+    _dumpvar(data, 0)
+    return buffer
+end
+
+--setup view events
+program.OnViewLoad = function(loadedView)
+	if firstrun then
+		firstrun = false
+		bigreactors.loadReactorOptions()
+		bigreactors.findReactors()
+		bigreactors.findTurbines()
+		bigreactors.findMonitors()
+		bigreactors.enderIOOverride()
+	end
+	if loadedView == "main" then
+reactorStats = bigreactors.getAllReactorStats()
+turbineStats = bigreactors.getAllTurbineStats()
+--setup dynamic controls for life of program
+--main view
+--quit button --restart button--settings button
+--reactors scrollview
+--reactor status buttons
+local content = program:GetObject('content')
+--add reactor buttons
+ local items = {}
+ local maxiterations = 0
+--set max iterations based on ammount of devices
+ if bigreactors.getReactorCount() >= bigreactors.getTurbineCount() then
+ maxiterations = bigreactors.getReactorCount()
+ else
+ maxiterations = bigreactors.getTurbineCount()
+ end
+ --loop through the max ammount of devices
+ for i=1, maxiterations do
+ 	--initialize all values to false only set to true if they exist
+ 	local reactorVisible = false
+ 	local turbineVisible = false
+	--check if we still have reactors to set values for
+	if i <= bigreactors.getReactorCount() then
+		reactorOnline = inTable(reactorStats.onlineReactors, i)
+		reactorVisible = true
+	end
+	--check if we still have turbines to set values for
+	if i <= bigreactors.getTurbineCount() then
+		turbineOnline = inTable(turbineStats.onlineTurbines, i)
+		turbineVisible = true
+	end
+	--set objIndex to whatever loop iteration(invisible objects cant be clicked)
+	local assocButton = {}
+	assocButton.reactorVisible = reactorVisible
+	assocButton.reactorOnline = reactorOnline
+	assocButton.turbineOnline = turbineOnline
+	assocButton.turbineVisible = turbineVisible
+	assocButton.objIndex = i
+	table.insert(items,assocButton)
+ end
+ content.Items = items
+	--main view events
+	--program:GetObject
+	--end individual buttons
+	program:GetObject('settings').OnClick = settingsClick
+	program:GetObject('restart').OnClick = function(self,event,side,x,y)
+	os.reboot()
+	end
+	program:GetObject('close').OnClick = function(self,event,side,x,y)
+	term.setCursorPos(1, 1)
+	term.setBackgroundColour(colors.black)
+	term.setTextColor(colours.white)
+	term.clear()
+	program:Quit()
+	end
+	program:GetObject('scrollUp').OnClick = function(self,event,side,x,y)
+		local scrollbar = program:GetObject('ScrollViewScrollBar')
+		scrollbar.Scroll = scrollbar.Scroll - 9
+		if scrollbar.Scroll < 0 then
+			scrollbar.Scroll = 0
+		elseif scrollbar.Scroll > scrollbar.MaxScroll then
+			scrollbar.Scroll = scrollbar.MaxScroll
+		end
+		if scrollbar.OnChange then
+			scrollbar:OnChange()
+		end
+	end
+	program:GetObject('scrollDown').OnClick = function(self,event,side,x,y)
+		local scrollbar = program:GetObject('ScrollViewScrollBar')
+		scrollbar.Scroll = scrollbar.Scroll + 9
+		if scrollbar.Scroll < 0 then
+			scrollbar.Scroll = 0
+		elseif scrollbar.Scroll > scrollbar.MaxScroll then
+			scrollbar.Scroll = scrollbar.MaxScroll
+		end
+		if scrollbar.OnChange then
+			scrollbar:OnChange()
+		end
+	end
+--reactors window --turbine window
+program:StartRepeatingTimer(updateGlobalStats,5)
+program:StartRepeatingTimer(function()
+bigreactors.reactorCruiseInit()
+end,30)
+	elseif loadedView == "reactor" then
+	program:StartRepeatingTimer(function()updateReactor(program.reactorIndex)end, 5)
+	--button click events
+	program:GetObject('onoff').OnClick=function(self,event,side,x,y)
+	bigreactors.toggleReactor(program.reactorIndex, not self.toggle)
+	self.toggle=not self.toggle
+	end
+	program:GetObject('setRodOverride').OnClick = function(self,event,side,x,y)
+	bigreactors.setRodManualControl(program.reactorIndex)
+	self.toggle=not self.toggle
+	end
+	program:GetObject('increaseRod').OnClick=function(self,event,side,x,y)
+	bigreactors.setRodPercentage("+",program.reactorIndex)
+	end
+	program:GetObject('decreaseRod').OnClick=function(self,event,side,x,y)
+	bigreactors.setRodPercentage("-",program.reactorIndex)
+	end
+	program:GetObject('close').OnClick=function(self,event,side,x,y)
+	program.Timers = {}
+	program:LoadView('main')
+	end
+	elseif loadedView == "turbine" then
+	--updateTurbine(turbineIndex)
+	--program.Timers = {}
+	program:StartRepeatingTimer(function()updateTurbine(program.turbineIndex)end, 5)
+	--button click events
+	program:GetObject('onoff').OnClick=function(self,event,side,x,y)
+	bigreactors.toggleTurbineActive(program.turbineIndex, not self.toggle)
+	self.toggle=not self.toggle
+	end
+	program:GetObject('increaseFlow').OnClick=function(self,event,side,x,y)
+	bigreactors.setTurbineFlowRate("+",program.turbineIndex)
+	end
+	program:GetObject('decreaseFlow').OnClick=function(self,event,side,x,y)
+	bigreactors.setTurbineFlowRate("-",program.turbineIndex)
+	end
+	program:GetObject('close').OnClick=function(self,event,side,x,y)
+	program.Timers = {}
+	program:LoadView('main')
+	end
+	elseif loadedView == "settings" then
+	--program settings page lets us dynamically setup various variables
+	getSettingsValues()
+	--settings click events
+	program:GetObject('applySettings').OnClick=function(self,event,side,x,y)
+	setSettingsValues()
+	end
+
+	program:GetObject('debugModeChooser').OnClick=function(self,event,side,x,y)
+	self.toggle=not self.toggle
+	if self.toggle then
+	self.Text = "True"
+	else
+	self.Text = "False"
+	end
+	end
+
+	program:GetObject('monitorEnderIONetworkChooser').OnClick=function(self,event,side,x,y)
+	self.toggle=not self.toggle
+	if self.toggle then
+	self.Text = "True"
+	else
+	self.Text = "False"
+	end
+	end
+	
+	program:GetObject('close').OnClick=function(self,event,side,x,y)
+	program.Timers = {}
+	program:LoadView('main')
+	end
+	end
+end
+--setup program initalization and any timers for updating the display
+program:Run(function()
+--grab initial values from bigreactors class
+
+--setup sync display devices
+end)
